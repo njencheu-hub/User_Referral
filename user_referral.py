@@ -1,5 +1,4 @@
 # Let’s read the dataset and see the variables we have.
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -192,7 +191,12 @@ data_plot = data.groupby(['date', 'is_referral'])['money_spent'].sum().reset_ind
 # this approach simulates an A/B test between predicted outcomes and actual outcomes.
 
 #load time series library prophet, we'll use it for the prediction
-import fbprophet
+# import fbprophet
+
+from prophet import Prophet  #New import
+
+# from prophet.serialize import model_to_json, model_from_json
+# from prophet.diagnostics import stan_backend
   
 #prepare the before the change dataset. We use total transaction value as main metric
 data_prediction = data.query('date<\'2015-10-31\'').groupby('date')['money_spent'].sum().reset_index()
@@ -200,22 +204,61 @@ data_prediction = data.query('date<\'2015-10-31\'').groupby('date')['money_spent
 data_prediction['ds'] = data_prediction['date']
 data_prediction.rename({'money_spent': 'y'}, axis=1, inplace=True)
 data_prediction.set_index('date', inplace=True)
+
+# Prophet expects a DataFrame with two regular columns: ds and y — not a datetime index.
+data_prediction = data_prediction.reset_index()  # Moves 'date' index to a column
+data_prediction = data_prediction[['ds', 'y']]   # Keep only the required columns
   
 #Let's build the model using prophet. From previous plots, time series appear pretty straightforward 
 # and flattish. Default values should do fine
-ts = fbprophet.Prophet(interval_width=0.95)
-ts.fit(data_prediction)
 
-#make predictions until the max date we have in our dataset
-days_predictions = days_predictions = (data['date'].max()-data_prediction['ds'].max()).days
-future_data = ts.make_future_dataframe(periods = days_predictions)
+# Create model and switch to PyStan backend
+
+# ts = Prophet(interval_width=0.95)
+
+# Use MCMC sampling (Bayesian full model), which avoids Stan's optimize crashes
+ts = Prophet(interval_width=0.95, mcmc_samples=100)
+# ts.stan_backend = stan_backend.get_backend_class("PystanBackend")(ts)
+
+# Fit the model
+ts.fit(data_prediction)
+# ts.fit(data_prediction, algorithm='LBFGS', iter=1000)
+
+# Make predictions until the max date we have in our dataset
+days_predictions = (data['date'].max() - data_prediction['ds'].max()).days
+future_data = ts.make_future_dataframe(periods=days_predictions)
 predictions = ts.predict(future_data)
 
-#let's plot them
-ts.plot(predictions)
-plt.plot(data.query('date>\'2015-10-30\'').groupby('date')['money_spent'].sum(), 'o', color='red', label='revenue')
-plt.legend()
-plt.savefig("predictions.png", bbox_inches='tight')
-plt.show()
+# # Let's plot the predictions
+# ts.plot(predictions)
+# plt.plot(data.query("date > '2015-10-30'").groupby('date')['money_spent'].sum(), 'o', color='red', label='revenue')
+# plt.legend()
+# plt.savefig("predictions.png", bbox_inches='tight')
+# # plt.show()
 
+# As we can see, actual values tend to be fairly consistently above our predictions, 
+# often well above the 95% interval of the prediction. After all, we did see in the plot 
+# the revenue seemed to have gone up compared to the trend.
 
+#compare the means
+print("Mean revenue per day after the launch is: ", 
+      round(data.query('date>\'2015-10-30\'').groupby('date')['money_spent'].sum().mean()),
+      "\n",
+      "Mean revenue of our predictions is:",
+      round(predictions.query('ds>\'2015-10-30\'')['yhat'].mean())
+      )
+
+# Mean revenue per day after the launch is:  83714
+# Mean revenue of our predictions is: 79049
+
+# As expected, average actual values are higher.
+# Let’s do a t-test now:
+
+#Let's do a paired t-test here where we are comparing day by day
+test = stats.ttest_rel(data.query('date>\'2015-10-30\'').groupby('date')['money_spent'].sum(), predictions.query('ds>\'2015-10-30\'')['yhat'])
+print("pvalue: ", round(test.pvalue,5))
+
+# pvalue:  0.00242
+
+# The difference looks significant. That being said, as we said above, 
+# data was so messy that we can hardly trust these results.
